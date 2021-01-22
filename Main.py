@@ -12,7 +12,7 @@ Exceptions:
 from bs4 import BeautifulSoup
 import requests
 import csv
-from time import sleep
+from time import sleep, time
 from random import randint
 import re
 
@@ -39,6 +39,7 @@ def get_flix_movies():
     - year
     - category
     """
+    print(f'Processing data from www.flixwatch.co with imdb score greater or equal to {imdb_score}%...')
     movie_urls = []
     url_flix = r'https://www.flixwatch.co/catalogue/netflix-czech-republic/?region%5B%5D=83158&region_operator=IN&ctype_' \
                r'operator=IN&audio_operator=IN&genre_operator=IN&agenre_operator=IN&age_operator=IN&imdb={}%3B100&' \
@@ -97,11 +98,11 @@ def get_csfd_movies():
     """
     Gets all of the user's rated urls and then with function get_user_movies returns list of dictionaries with information about every rated movie.
     """
+    print(f'Getting all rated movies from user {user}...')
     rated_movies = []
     url_rating = get_user_url(get_soup(url_csfd_search, user_parameters))
     soup_rating = get_soup(url_rating)
     while True:
-        # a = soup_rating.find('tbody')
         for elem in soup_rating.find_all('h3', class_='film-title-nooverflow'):
             rated_movies.append(elem.a['href'])
         try:
@@ -121,6 +122,8 @@ def get_user_movies(urls):
         csv_writer = csv.writer(f)
         csv_writer.writerow(['title', 'year', 'genre'])
         for movie in urls:
+            if len(list_movies) % 10 == 0 and len(list_movies) != 0:
+                print(f'-- {len(list_movies)}th movie is being processed...')
             soup = get_soup(url_csfd + movie)
             movie_par = soup.find('div', class_='film-header-name').text
             a = movie_par.replace('\t', '').split('\n')
@@ -145,7 +148,6 @@ def get_user_movies(urls):
 def compare(f_dict, c_dict):
     """
     Compare lists of dictionaries.
-
     """
     result = []
     with open(csv_result, 'w', encoding=encoding) as f:
@@ -165,6 +167,7 @@ def compare(f_dict, c_dict):
 
 imdb_score = 80
 user = 'sentienpin'
+
 url_csfd = 'https://new.csfd.cz'
 url_csfd_search = url_csfd + '/hledat'
 headers = {'User-Agent': 'Chrome/39.0.2171.95'}
@@ -177,7 +180,9 @@ csv_result = f'movies_with_{imdb_score}_percent.csv'
 
 # Main
 if __name__ == '__main__':
+    start = time()
     flix_dicts = get_flix_movies()
     csfd_dicts = get_csfd_movies()
     res = compare(flix_dicts, csfd_dicts)
-    print('Not seen movies:\n-- ' + '\n-- '.join(res))
+    print('\nNot seen movies:\n-- ' + '\n-- '.join(res))
+    print(f'\nTotal time of run is: {(time() - start)/60} minutes.')
