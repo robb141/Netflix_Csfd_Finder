@@ -1,6 +1,6 @@
 '''
 Get movies from flixwatch.co with specified RATING on imdb that are on Netflix for Czech republic.
-Look for these movies on csfd and save all movies that USER didnt see to csv file.
+Look for these movies on csfd and save all movies that USER didnt see to database and generates csv file.
 
 To specify:
 - rating on IMDB
@@ -15,6 +15,10 @@ import csv
 from time import sleep, time
 from random import randint
 import re
+from My_Database import Movies
+
+user = input('What csfd user would you like to compare movies to?')
+imdb_score = int(input('Above which percentage would you like to fetch movies?'))
 
 
 def get_soup(url_soup, params={}):
@@ -26,24 +30,27 @@ def get_soup(url_soup, params={}):
 def get_next_page(soup_page):
     try:
         return soup_page.find('a', class_='next page-numbers')['href']
-    except:
+    except TypeError:
         return None
 
 
 def get_flix_movies():
     """
     Get all netflix movies for czech republic that has imdb score more than what is in the imdb_score variable.
-    Returns list of dictionaries with information about movie.
+    Returns list of tuples with information about movie.
     Information consists of:
     - title
     - year
     - category
     """
-    print(f'Processing data from www.flixwatch.co with imdb score greater or equal to {imdb_score}%...')
     movie_urls = []
+    flix_movies = []
+    print(f'Processing data from www.flixwatch.co with imdb score greater or equal to {imdb_score}%...')
     url_flix = r'https://www.flixwatch.co/catalogue/netflix-czech-republic/?region%5B%5D=83158&region_operator=IN&ctype_' \
                r'operator=IN&audio_operator=IN&genre_operator=IN&agenre_operator=IN&age_operator=IN&imdb={}%3B100&' \
                r'metascore=0%3B100&release=1920%3B2021&sort=default'.format(imdb_score)
+
+    # Takes url's of movies across all pages.
     while True:
         soup = get_soup(url_flix)
         movies = soup.find_all('div', class_='catalogue-item')
@@ -52,31 +59,18 @@ def get_flix_movies():
         url_flix = get_next_page(soup)
         if url_flix is None:
             break
-    return get_flix_dicts(movie_urls)
 
-
-def get_flix_dicts(urls):
-    """
-    Returns list of dictionaries and saves information about the movies to csv file.
-    """
-    dicts_flix = []
-    with open(csv_flix, 'w', encoding=encoding) as f:
-        csv_writer = csv.writer(f)
-        csv_writer.writerow(['title', 'year', 'category'])
-        for url in urls:
-            soup = get_soup(url)
-            for line in soup.find('div', class_='grid-single-child'):
-                if line.b.text == 'Year:':
-                    # In title removes everything between parenthesis. Category (movies/tvshows) is taken from the url.
-                    dicts_flix.append({
-                        'title': re.sub(r"[\(].*?[\)]", "", soup.find('h1', class_='h1class').text.replace("’", "'")),
-                        'year': line.text.split()[1],
-                        'category': url.split('/')[-3]
-                    })
-                    csv_writer.writerow([soup.find('h1', class_='h1class').text,
-                                         line.text.split()[1],
-                                         url.split('/')[-3]])
-    return dicts_flix
+    # Takes required information from every movie.
+    for url in movie_urls:
+        soup = get_soup(url)
+        for line in soup.find('div', class_='grid-single-child'):
+            if line.b.text == 'Year:':
+                # Stores title, year and category.
+                # In title it removes everything between parenthesis. Category (movies/tvshows) is taken from the url.
+                flix_movies.append((re.sub(r"[\(].*?[\)]", "", soup.find('h1', class_='h1class').text.replace("’", "'")),
+                                    line.text.split()[1],
+                                    url.split('/')[-3]))
+    return flix_movies
 
 
 def get_user_url(soup):
@@ -96,77 +90,67 @@ def get_user_url(soup):
 
 def get_csfd_movies():
     """
-    Gets all of the user's rated urls and then with function get_user_movies returns list of dictionaries with information about every rated movie.
+    Gets all of the user's rated urls and then
+    returns list of tuples with information about every rated movie in format [([titles], year, genre), ...]
+    Titles is list of strings - we keep all of the movie translations.
     """
     print(f'Getting all rated movies from user {user}...')
-    rated_movies = []
+    movie_urls = []
+    csfd_movies = []
     url_rating = get_user_url(get_soup(url_csfd_search, user_parameters))
     soup_rating = get_soup(url_rating)
+
+    # Takes url's of every rated movie across all pages.
     while True:
         for elem in soup_rating.find_all('h3', class_='film-title-nooverflow'):
-            rated_movies.append(elem.a['href'])
+            movie_urls.append(elem.a['href'])
         try:
             soup_rating = get_soup(url_csfd + soup_rating.find('a', class_='page-next')['href'])
-        except:
+        except TypeError:
             break
-    return get_user_movies(rated_movies)
+
+    # Takes required information from every rated movie.
+    for movie in movie_urls:
+        if len(csfd_movies) % 10 == 0 and len(csfd_movies) != 0:
+            print(f'-- {len(csfd_movies)}th movie is being processed...')
+        soup = get_soup(url_csfd + movie)
+        movie_par = soup.find('div', class_='film-header-name').text
+        a = movie_par.replace('\t', '').split('\n')
+        movie_titles = []
+        for s in a:
+            if s != '' and not s.startswith('(') and s not in movie_titles:
+                movie_titles.append(s)
+        year = soup.find('span', itemprop='dateCreated').text
+        if '(' in year:
+            year = year.replace('(', '').replace(')', '')
+        genre = soup.find('div', class_='genres').text
+        csfd_movies.append((movie_titles, year, genre))
+    return csfd_movies
 
 
-def get_user_movies(urls):
+def compare_and_save(flix_movies, csfd_movies):
     """
-    Returns list of dictionaries and saves information about the movies to csv file.
-    Title is list of strings, we keep all of the movie translations.
-    """
-    list_movies = []
-    with open(csv_csfd, 'w', encoding=encoding) as f:
-        csv_writer = csv.writer(f)
-        csv_writer.writerow(['title', 'year', 'genre'])
-        for movie in urls:
-            if len(list_movies) % 10 == 0 and len(list_movies) != 0:
-                print(f'-- {len(list_movies)}th movie is being processed...')
-            soup = get_soup(url_csfd + movie)
-            movie_par = soup.find('div', class_='film-header-name').text
-            a = movie_par.replace('\t', '').split('\n')
-            movie_titles = []
-            for s in a:
-                if s != '' and not s.startswith('(') and s not in movie_titles:
-                    movie_titles.append(s)
-            year = soup.find('span', itemprop='dateCreated').text
-            if '(' in year:
-                year = year.replace('(', '').replace(')', '')
-            genre = soup.find('div', class_='genres').text
-            d_movies = {
-                'title': movie_titles,
-                'year': year,
-                'genre': genre
-            }
-            list_movies.append(d_movies)
-            csv_writer.writerow([movie_titles, year, genre])
-    return list_movies
-
-
-def compare(f_dict, c_dict):
-    """
-    Compare lists of dictionaries.
+    Compare movies and saves it into database and csv.
     """
     result = []
     with open(csv_result, 'w', encoding=encoding) as f:
         csv_writer = csv.writer(f)
         csv_writer.writerow(['title', 'year', 'category', 'genre'])
-        for i in f_dict:
-            seen = False
-            for j in c_dict:
-                if i['title'] in j['title']:
-                    seen = True
+        for i in range(len(flix_movies)):
+            flag_seen = False
+            for j in range(len(csfd_movies)):
+                if flix_movies[i][0] in csfd_movies[j][0]:
+                    flix_movies[i] += (True, )
+                    flag_seen = True
                     break
-            if not seen:
-                result.append(i['title'])
-                csv_writer.writerow([i['title'], i['year'], i['category'], j['genre']])
+            if not flag_seen:
+                flix_movies[i] += (False, )
+                result.append(flix_movies[i][0])
+                csv_writer.writerow([flix_movies[i][0], flix_movies[i][1], flix_movies[i][2], csfd_movies[j][2]])
+        movie = Movies()
+        movie.create_and_insert_table(flix_movies)
     return result
 
-
-imdb_score = 80
-user = 'sentienpin'
 
 url_csfd = 'https://new.csfd.cz'
 url_csfd_search = url_csfd + '/hledat'
@@ -181,8 +165,8 @@ csv_result = f'movies_with_{imdb_score}_percent.csv'
 # Main
 if __name__ == '__main__':
     start = time()
-    flix_dicts = get_flix_movies()
-    csfd_dicts = get_csfd_movies()
-    res = compare(flix_dicts, csfd_dicts)
+    flix_tuples = get_flix_movies()
+    csfd_tuples = get_csfd_movies()
+    res = compare_and_save(flix_tuples, csfd_tuples)
     print('\nNot seen movies:\n-- ' + '\n-- '.join(res))
     print(f'\nTotal time of run is: {(time() - start)/60} minutes.')
