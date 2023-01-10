@@ -64,12 +64,15 @@ def get_flix_movies():
     for url in movie_urls:
         soup = get_soup(url)
         for line in soup.find('div', class_='grid-single-child'):
-            if line.b.text == 'Year:':
-                # Stores title, year and category.
-                # In title it removes everything between parenthesis. Category (movies/tvshows) is taken from the url.
-                flix_movies.append((re.sub(r"[\(].*?[\)]", "", soup.find('h1', class_='h1class').text.replace("’", "'")),
-                                    line.text.split()[1],
-                                    url.split('/')[-3]))
+            try:
+                if line.b.text == 'Year:':
+                    # Stores title, year and category.
+                    # In title it removes everything between parenthesis. Category (movies/tvshows) is taken from the url.
+                    flix_movies.append((re.sub(r"[\(].*?[\)]", "", soup.find('h1', class_='h1class').text.replace("’", "'")),
+                                        line.text.split()[1],
+                                        url.split('/')[-3]))
+            except AttributeError:
+                pass
     return flix_movies
 
 
@@ -79,20 +82,20 @@ def get_user_url(soup):
     Returns error if the first search result on website is not equal to searched user, otherwise returns user rating url.
     """
     try:
-        first_user = soup.find('section', class_='box striped-articles main-users').a['title'].lower()
+        first_user = soup.find('a', class_='user-title-name').string
     except:
         raise Exception(f'User {user} doesn\'t exist!')
-    if user.lower() != first_user:
+    if user.lower() != first_user.lower():
         raise Exception(f'Could not find user {user}. The first user found is {first_user}')
-    url = url_csfd + soup.find('section', class_='box striped-articles main-users').a['href'] + 'hodnoceni'
+    url = url_csfd + soup.find('a', class_='user-title-name')['href'] + 'hodnoceni'
     return url
 
 
 def get_csfd_movies():
     """
-    Gets all of the user's rated urls and then
+    Gets all the user's rated urls and then
     returns list of tuples with information about every rated movie in format [([titles], year, genre), ...]
-    Titles is list of strings - we keep all of the movie translations.
+    Titles is list of strings - we keep all the movie translations.
     """
     print(f'Getting all rated movies from user {user}...')
     movie_urls = []
@@ -120,7 +123,7 @@ def get_csfd_movies():
         for s in a:
             if s != '' and not s.startswith('(') and s not in movie_titles:
                 movie_titles.append(s)
-        year = soup.find('span', itemprop='dateCreated').text
+        year = soup.find('div', class_='origin').span.string.replace(',', '').strip()
         if '(' in year:
             year = year.replace('(', '').replace(')', '')
         genre = soup.find('div', class_='genres').text
@@ -133,9 +136,9 @@ def compare_and_save(flix_movies, csfd_movies):
     Compare movies and saves it into database and csv.
     """
     result = []
-    with open(csv_result, 'w', encoding=encoding) as f:
+    with open(csv_result, 'w', encoding=encoding, newline='') as f:
         csv_writer = csv.writer(f)
-        csv_writer.writerow(['title', 'year', 'category', 'genre'])
+        csv_writer.writerow(['title', 'year', 'category'])
         for i in range(len(flix_movies)):
             flag_seen = False
             for j in range(len(csfd_movies)):
@@ -146,18 +149,18 @@ def compare_and_save(flix_movies, csfd_movies):
             if not flag_seen:
                 flix_movies[i] += (False, )
                 result.append(flix_movies[i][0])
-                csv_writer.writerow([flix_movies[i][0], flix_movies[i][1], flix_movies[i][2], csfd_movies[j][2]])
+                csv_writer.writerow([flix_movies[i][0], flix_movies[i][1], flix_movies[i][2]])
         movie = Movies()
         movie.create_and_insert_table(flix_movies)
     return result
 
 
-url_csfd = 'https://new.csfd.cz'
+url_csfd = 'https://csfd.cz'
 url_csfd_search = url_csfd + '/hledat'
 headers = {'User-Agent': 'Chrome/39.0.2171.95'}
 user_parameters = {'q': user}
 parser = 'html.parser'
-encoding = 'utf-8'
+encoding = 'utf-16'
 csv_flix = 'flix_movies.csv'
 csv_csfd = 'csfd_movies.csv'
 csv_result = f'movies_with_{imdb_score}_percent.csv'
