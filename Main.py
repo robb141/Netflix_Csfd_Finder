@@ -63,13 +63,28 @@ def get_flix_movies():
     # Takes required information from every movie.
     for url in movie_urls:
         soup = get_soup(url)
+        rating = year = audio = None
+
+        # Stores title, year, category, rating, audio and duration.
+        # In title it removes everything between parenthesis to avoid redundancy like '... (netflix version)'.
+        # Category (movies/tvshows) is taken from the url.
         for line in soup.find('div', class_='grid-single-child'):
-            if line.b.text == 'Year:':
-                # Stores title, year and category.
-                # In title it removes everything between parenthesis. Category (movies/tvshows) is taken from the url.
+            if line.b.text == 'IMDb:':
+                rating = float(line.text.split()[1].split('/')[0])
+            elif line.b.text == 'Audio:':
+                audio = line.text.split()[-1]
+            elif line.b.text == 'Year:':
+                year = line.text.split()[1]
+            elif line.b.text == 'Duration:':
+                duration = line.text.split()[1]
                 flix_movies.append((re.sub(r"[\(].*?[\)]", "", soup.find('h1', class_='h1class').text.replace("’", "'")),
-                                    line.text.split()[1],
-                                    url.split('/')[-3]))
+                                    year,
+                                    url.split('/')[-3],
+                                    rating,
+                                    audio,
+                                    duration
+                                    ))
+                break
     return flix_movies
 
 
@@ -124,7 +139,7 @@ def get_csfd_movies():
         if '(' in year:
             year = year.replace('(', '').replace(')', '')
         genre = soup.find('div', class_='genres').text
-        csfd_movies.append((movie_titles, year, genre))
+        csfd_movies.append((movie_titles, year, genre, movie))
     return csfd_movies
 
 
@@ -140,11 +155,11 @@ def compare_and_save(flix_movies, csfd_movies):
             flag_seen = False
             for j in range(len(csfd_movies)):
                 if flix_movies[i][0] in csfd_movies[j][0]:
-                    flix_movies[i] += (True, )
+                    flix_movies[i] += (csfd_movies[j][2], True, )
                     flag_seen = True
                     break
             if not flag_seen:
-                flix_movies[i] += (False, )
+                flix_movies[i] += (csfd_movies[j][2], False, )
                 result.append(flix_movies[i][0])
                 csv_writer.writerow([flix_movies[i][0], flix_movies[i][1], flix_movies[i][2], csfd_movies[j][2]])
         movie = Movies()

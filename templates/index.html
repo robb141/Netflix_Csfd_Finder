@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Home page</title>
+<!--    <link href="css_table.css" rel="stylesheet">-->
+    <style>tfoot input {
+        width: 100%;
+        padding: 3px;
+        box-sizing: border-box;
+    }</style>
+    <link href="https://cdn.datatables.net/1.10.23/css/jquery.dataTables.min.css" rel="stylesheet">
+</head>
+<body>
+    <h1>Movies and TV shows!</h1>
+    <table id="example" class="display dataTable" style="width:100%">
+        <thead>
+            <tr>
+                <th>Movie_ID</th>
+                <th>Title</th>
+                <th>Year</th>
+                <th>Category</th>
+                <th>Rating</th>
+                <th>Genre</th>
+                <th>Seen</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <td>{{row[0]}}</td>
+                <td>{{row[1]}}</td>
+                <td>{{row[2]}}</td>
+                <td>{{row[3]}}</td>
+                <td>{{row[4]}}</td>
+                <td>{{row[7]}}</td>
+                <td>{{row[8]}}</td>
+<!--                {% if row[4] == '1' %}-->
+<!--                    <td>True</td>-->
+<!--                {% else %}-->
+<!--                    <td>False</td>-->
+<!--                {% endif %}-->
+            </tr>
+            {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr>
+                <th>Id</th>
+                <th>Title</th>
+                <th>Year</th>
+                <th>Category</th>
+                <th>Rating</th>
+                <th>Genre</th>
+                <th>Seen</th>
+            </tr>
+        </tfoot>
+    </table>
+</body>
+<script src="https://code.jquery.com/jquery-3.5.1.js"></script>
+<script src="https://cdn.datatables.net/1.10.23/js/jquery.dataTables.min.js"></script>
+<script>$(document).ready(function() {
+// Setup - add a text input to each footer cell
+$('#example tfoot th').each( function () {
+var title = $(this).text();
+$(this).html( '<input type="text" placeholder="Search '+title+'" />' );
+} );
+
+// DataTable
+var table = $('#example').DataTable({
+initComplete: function () {
+// Apply the search
+this.api().columns().every( function () {
+var that = this;
+
+$( 'input', this.footer() ).on( 'keyup change clear', function () {
+if ( that.search() !== this.value ) {
+that
+.search( this.value )
+.draw();
+}
+} );
+} );
+}
+});
+
+} );</script>
+</html>
