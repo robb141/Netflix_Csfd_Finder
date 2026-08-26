@@ -1,2 +1,6 @@
 .idea
 /venv/
+__pycache__/
+movies.db
+movies_not_seen_on_csfd.csv
+netflix_csfd_finder.log
