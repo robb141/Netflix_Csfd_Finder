@@ -1,4 +1,7 @@
+import logging
 import sqlite3
+
+logger = logging.getLogger(__name__)
 
 
 class Movies:
@@ -6,21 +9,118 @@ class Movies:
         self.__db_name = 'netflix'
         self.__connection = sqlite3.connect('movies.db')
         self.__c = self.__connection.cursor()
+        # Whether a UNIQUE(title, year) index is in place, which is required for the
+        # upsert (ON CONFLICT) used by create_and_insert_table to work. It may be False
+        # for a pre-existing database that already has duplicate (title, year) rows.
+        self.__can_upsert = False
 
     def __del__(self):
         self.__connection.close()
 
-    def create_and_insert_table(self, movies):
+    def __ensure_schema(self):
+        """
+        Creates the netflix table if it doesn't exist yet, and migrates an older table
+        (from before percentage caching existed) to have the percentage_checked_at
+        column and a UNIQUE(title, year) index, tolerating a table/column/index that
+        already exists.
+        """
         try:
-            self.__c.execute(f'CREATE TABLE {self.__db_name} (movie_id INTEGER PRIMARY KEY, title TEXT, year INTEGER, category TEXT, seen BOOLEAN NOT NULL default 0, percentage INTEGER)')
+            self.__c.execute(
+                f'CREATE TABLE {self.__db_name} ('
+                'movie_id INTEGER PRIMARY KEY, '
+                'title TEXT, '
+                'year INTEGER, '
+                'category TEXT, '
+                'seen BOOLEAN NOT NULL default 0, '
+                'percentage INTEGER, '
+                'percentage_checked_at TEXT)'
+            )
         except sqlite3.OperationalError:
-            print('Table already exists!')
-        self.__c.execute(f'DELETE FROM {self.__db_name}')
-        self.__c.executemany(f'INSERT INTO {self.__db_name}(title, year, category, seen, percentage) VALUES (?,?,?,?,?)', movies)
+            logger.info('Table already exists!')
+
+        # Existing databases created before percentage caching was added won't have
+        # this column - add it, tolerating it already being there.
+        try:
+            self.__c.execute(f'ALTER TABLE {self.__db_name} ADD COLUMN percentage_checked_at TEXT')
+        except sqlite3.OperationalError:
+            pass
+
+        # An upsert keyed on (title, year) requires a unique index on those columns.
+        # A pre-existing database may already contain duplicate (title, year) rows
+        # (from before this constraint existed), in which case creating the index
+        # fails - fall back to the old delete-and-reinsert behavior in that case.
+        try:
+            self.__c.execute(
+                f'CREATE UNIQUE INDEX IF NOT EXISTS ux_{self.__db_name}_title_year '
+                f'ON {self.__db_name}(title, year)'
+            )
+            self.__can_upsert = True
+        except sqlite3.IntegrityError:
+            logger.warning(
+                'Could not create a UNIQUE(title, year) index on the existing netflix '
+                'table (duplicate rows present) - falling back to wiping the table on '
+                'every run, so cached percentages will not persist this time.'
+            )
+            self.__can_upsert = False
+
         self.__connection.commit()
+
+    def create_and_insert_table(self, movies):
+        """
+        Ensures the table/schema exists, then either upserts each row keyed on
+        (title, year) - preserving any previously-stored percentage/timestamp for rows
+        not present in `movies`, and updating rows that are - or, if upserting isn't
+        possible (see __ensure_schema), falls back to wiping and reinserting everything.
+
+        `movies` is an iterable of tuples:
+        (title, year, category, seen, percentage, percentage_checked_at)
+        """
+        self.__ensure_schema()
+
+        if self.__can_upsert:
+            self.__c.executemany(
+                f'INSERT INTO {self.__db_name}'
+                '(title, year, category, seen, percentage, percentage_checked_at) '
+                'VALUES (?,?,?,?,?,?) '
+                'ON CONFLICT(title, year) DO UPDATE SET '
+                'category=excluded.category, '
+                'seen=excluded.seen, '
+                'percentage=excluded.percentage, '
+                'percentage_checked_at=excluded.percentage_checked_at',
+                movies,
+            )
+        else:
+            self.__c.execute(f'DELETE FROM {self.__db_name}')
+            self.__c.executemany(
+                f'INSERT INTO {self.__db_name}'
+                '(title, year, category, seen, percentage, percentage_checked_at) '
+                'VALUES (?,?,?,?,?,?)',
+                movies,
+            )
+        self.__connection.commit()
+
+    def get_cached_percentage(self, title, year):
+        """
+        Looks up a previously-stored (percentage, percentage_checked_at) pair for a
+        title, matched on (title, year) the same way rows are keyed for upserting.
+        Returns None if there's no row, or no percentage/timestamp was ever recorded
+        for it (e.g. the title was marked seen, or the rating lookup failed).
+        """
+        self.__ensure_schema()
+        self.__c.execute(
+            f'SELECT percentage, percentage_checked_at FROM {self.__db_name} '
+            'WHERE title = ? AND year = ?',
+            (title, year),
+        )
+        row = self.__c.fetchone()
+        if row is None:
+            return None
+        percentage, checked_at = row
+        if percentage is None or checked_at is None:
+            return None
+        return percentage, checked_at
 
     def get_data(self, condition):
         self.__c.execute(f'SELECT * FROM {self.__db_name} WHERE {condition}')
         all_movies = self.__c.fetchall()
         return all_movies
-

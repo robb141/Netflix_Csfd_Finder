@@ -16,6 +16,7 @@ import os
 import re
 import csv
 import logging
+from datetime import datetime, timezone
 from time import sleep, time
 from random import randint
 
@@ -53,6 +54,10 @@ CSFD_HEADERS = {
 
 encoding = 'utf-16'
 csv_result = 'movies_not_seen_on_csfd.csv'
+
+# csfd ratings can drift as more people rate a film, so a cached percentage older
+# than this is treated as stale and refetched instead of reused.
+PERCENTAGE_CACHE_MAX_AGE_DAYS = 180
 
 user = input('What csfd user would you like to compare movies to? ')
 
@@ -253,29 +258,76 @@ def get_rating_for_title(title, year):
         return None
 
 
+def years_match(year_a, year_b):
+    """
+    Returns whether two year strings should be treated as matching, for both
+    seen/unseen comparison and cache lookups: true if either one is missing/empty
+    (TMDB's year can be '' for unannounced titles, and csfd's year-extraction can
+    also come back empty for a handful of malformed pages), or if both are present
+    and equal. Only an actual year-vs-year disagreement counts as a mismatch.
+    """
+    if not year_a or not year_b:
+        return True
+    return year_a == year_b
+
+
+def _cached_percentage_age_days(percentage_checked_at):
+    """
+    Returns how many days old an ISO-8601 percentage_checked_at timestamp is, or
+    None if it can't be parsed (e.g. malformed/missing data in an older row).
+    """
+    try:
+        checked_at = datetime.fromisoformat(percentage_checked_at)
+    except (TypeError, ValueError):
+        return None
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - checked_at).total_seconds() / 86400
+
+
 def compare_and_save(netflix_titles, csfd_movies):
     """
     Compare movies and saves it into database and csv.
     """
     result = []
+    movie = Movies()
     with open(csv_result, 'w', encoding=encoding, newline='') as f:
         csv_writer = csv.writer(f)
         csv_writer.writerow(['title', 'year', 'category', 'percentage'])
         for i in range(len(netflix_titles)):
             flag_seen = False
             for j in range(len(csfd_movies)):
-                if netflix_titles[i][0] in csfd_movies[j][0]:
-                    netflix_titles[i] += (True, None)
+                csfd_titles, csfd_year, _ = csfd_movies[j]
+                if netflix_titles[i][0] in csfd_titles and years_match(netflix_titles[i][1], csfd_year):
+                    netflix_titles[i] += (True, None, None)
                     flag_seen = True
                     break
             if not flag_seen:
                 title, year, category = netflix_titles[i]
-                logger.info(f'Looking up csfd rating for "{title}"...')
-                percentage = get_rating_for_title(title, year)
-                netflix_titles[i] += (False, percentage)
+
+                percentage = None
+                percentage_checked_at = None
+                cached = movie.get_cached_percentage(title, year)
+                if cached is not None:
+                    cached_percentage, cached_checked_at = cached
+                    age_days = _cached_percentage_age_days(cached_checked_at)
+                    if age_days is not None and age_days < PERCENTAGE_CACHE_MAX_AGE_DAYS:
+                        logger.info(
+                            f'-- Using cached csfd rating for "{title}" '
+                            f'({age_days:.1f} days old).'
+                        )
+                        percentage = cached_percentage
+                        percentage_checked_at = cached_checked_at
+
+                if percentage_checked_at is None:
+                    logger.info(f'Looking up csfd rating for "{title}"...')
+                    percentage = get_rating_for_title(title, year)
+                    if percentage is not None:
+                        percentage_checked_at = datetime.now(timezone.utc).isoformat()
+
+                netflix_titles[i] += (False, percentage, percentage_checked_at)
                 result.append(title)
                 csv_writer.writerow([title, year, category, percentage])
-        movie = Movies()
         movie.create_and_insert_table(netflix_titles)
     return result
 
