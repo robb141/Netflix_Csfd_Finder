@@ -26,20 +26,18 @@ from bs4 import BeautifulSoup
 
 from my_database import Movies
 
+# Configured on the root logger (not this module's own logger) so that every module's
+# `logging.getLogger(__name__)` - including my_database.py's - propagates up to these
+# same console/file handlers instead of going nowhere.
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('netflix_csfd_finder.log', encoding='utf-8'),
+    ],
+)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-_log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-
-_console_handler = logging.StreamHandler()
-_console_handler.setLevel(logging.INFO)
-_console_handler.setFormatter(_log_formatter)
-logger.addHandler(_console_handler)
-
-_file_handler = logging.FileHandler('netflix_csfd_finder.log', encoding='utf-8')
-_file_handler.setLevel(logging.INFO)
-_file_handler.setFormatter(_log_formatter)
-logger.addHandler(_file_handler)
 
 TMDB_API_KEY = os.environ.get('TMDB_API_KEY')
 TMDB_BASE = 'https://api.themoviedb.org/3'
