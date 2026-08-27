@@ -26,7 +26,7 @@ import requests
 from curl_cffi import requests as csfd_requests
 from bs4 import BeautifulSoup
 
-from my_database import Movies
+from my_database import Movies, CsfdFilmCache
 
 # Configured on the root logger (not this module's own logger) so that every module's
 # `logging.getLogger(__name__)` - including my_database.py's - propagates up to these
@@ -208,15 +208,33 @@ def get_csfd_movies():
             break
         soup_rating = get_csfd_soup(CSFD_BASE + next_page['href'])
 
-    # Takes required information from every rated movie.
+    # Takes required information from every rated movie. A film's titles/year/genre
+    # never change once scraped, so a permanent cache (keyed by href, shared across
+    # all users and all runs) is checked first - only a href never seen before
+    # triggers an actual detail-page fetch.
+    film_cache = CsfdFilmCache()
+    cache_hits = 0
+    cache_misses = 0
     for movie in movie_urls:
         if len(csfd_movies) % 10 == 0 and len(csfd_movies) != 0:
             logger.info(f'-- {len(csfd_movies)}th movie is being processed...')
+        cached = film_cache.get(movie)
+        if cached is not None:
+            csfd_movies.append(cached)
+            cache_hits += 1
+            continue
         try:
             soup = get_csfd_soup(CSFD_BASE + movie)
-            csfd_movies.append((get_titles(soup), get_year(soup), get_genre(soup)))
+            titles, year, genre = get_titles(soup), get_year(soup), get_genre(soup)
+            csfd_movies.append((titles, year, genre))
+            film_cache.set(movie, titles, year, genre)
+            cache_misses += 1
         except Exception as e:
             logger.warning(f'-- Skipping {movie}, failed to parse: {e}')
+    logger.info(
+        f'Film metadata cache: {cache_hits} served from cache, '
+        f'{cache_misses} freshly fetched.'
+    )
     return csfd_movies
 
 

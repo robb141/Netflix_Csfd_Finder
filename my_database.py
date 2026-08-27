@@ -1,3 +1,4 @@
+import json
 import logging
 import sqlite3
 
@@ -124,3 +125,67 @@ class Movies:
         self.__c.execute(f'SELECT * FROM {self.__db_name} WHERE {condition}')
         all_movies = self.__c.fetchall()
         return all_movies
+
+
+class CsfdFilmCache:
+    """
+    Permanent (no expiry) cache of csfd film-page metadata - titles, year, genre -
+    keyed by the film's href/URL, stored in the same movies.db sqlite file as the
+    `netflix` table (in its own `csfd_films` table).
+
+    Unlike the separate percentage cache on Movies (which has a 180-day staleness
+    window because audience-rating percentages change over time), a film's
+    titles/year/genre never change once scraped. So this cache has no age/expiry
+    logic at all: once a href is stored, it is considered valid forever, for every
+    user, across every run.
+    """
+
+    def __init__(self):
+        self.__table_name = 'csfd_films'
+        self.__connection = sqlite3.connect('movies.db')
+        self.__c = self.__connection.cursor()
+        self.__ensure_schema()
+
+    def __del__(self):
+        self.__connection.close()
+
+    def __ensure_schema(self):
+        try:
+            self.__c.execute(
+                f'CREATE TABLE {self.__table_name} '
+                '(href TEXT PRIMARY KEY, titles TEXT NOT NULL, year TEXT, genre TEXT)'
+            )
+            self.__connection.commit()
+        except sqlite3.OperationalError:
+            # Table already exists (e.g. an existing movies.db from before this
+            # cache was introduced, or a previous run already created it).
+            pass
+
+    def get(self, href):
+        """
+        Looks up a cached (titles, year, genre) tuple for the given film href.
+        Returns None if this href has never been cached. `titles` is deserialized
+        back into a list of strings.
+        """
+        self.__c.execute(
+            f'SELECT titles, year, genre FROM {self.__table_name} WHERE href = ?', (href,)
+        )
+        row = self.__c.fetchone()
+        if row is None:
+            return None
+        titles_json, year, genre = row
+        return json.loads(titles_json), year, genre
+
+    def set(self, href, titles, year, genre):
+        """
+        Stores (titles, year, genre) for the given film href. A given href always
+        maps to the same permanent metadata, so there's no meaningful "conflict" to
+        resolve - INSERT OR REPLACE is used to handle both the first write and any
+        harmless repeat write of identical data.
+        """
+        self.__c.execute(
+            f'INSERT OR REPLACE INTO {self.__table_name}(href, titles, year, genre) '
+            'VALUES (?,?,?,?)',
+            (href, json.dumps(titles), year, genre)
+        )
+        self.__connection.commit()
