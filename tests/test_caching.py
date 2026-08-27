@@ -126,18 +126,37 @@ class CreateAndInsertTableUpsertTests(TempDbTestCase):
     def _row_for(self, movie, title):
         return next(row for row in movie.get_data('1=1') if row[1] == title)
 
-    def test_inserting_different_title_leaves_first_untouched(self):
+    def test_inserting_multiple_titles_in_one_call_keeps_all_of_them(self):
         movie = Movies()
-        movie.create_and_insert_table([('First Movie', '2020', 'movie', False, 60, 'ts-1')])
-        movie.create_and_insert_table([('Second Movie', '2021', 'movie', False, 70, 'ts-2')])
+        movie.create_and_insert_table([
+            ('First Movie', '2020', 'movie', False, 60, 'ts-1'),
+            ('Second Movie', '2021', 'movie', False, 70, 'ts-2'),
+        ])
 
         all_rows = movie.get_data('1=1')
         titles = {row[1] for row in all_rows}
-        # Both rows must exist - the second insert must not have wiped the first.
         self.assertEqual(titles, {'First Movie', 'Second Movie'})
         first_row = self._row_for(movie, 'First Movie')
         self.assertEqual(first_row[5], 60)
         self.assertEqual(first_row[6], 'ts-1')
+
+    def test_title_absent_from_a_later_call_is_deleted(self):
+        # create_and_insert_table is called once per run with the FULL current
+        # catalogue, so each call represents "this is the complete truth" - a title
+        # missing from a later call (e.g. one that left Netflix) must be deleted,
+        # not left behind looking like it's still there.
+        movie = Movies()
+        movie.create_and_insert_table([
+            ('Staying Movie', '2020', 'movie', False, 60, 'ts-1'),
+            ('Leaving Movie', '2019', 'movie', True, None, None),
+        ])
+        movie.create_and_insert_table([
+            ('Staying Movie', '2020', 'movie', False, 60, 'ts-1'),
+        ])
+
+        all_rows = movie.get_data('1=1')
+        titles = {row[1] for row in all_rows}
+        self.assertEqual(titles, {'Staying Movie'})
 
     def test_reinserting_same_title_and_year_updates_in_place(self):
         movie = Movies()

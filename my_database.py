@@ -77,6 +77,7 @@ class Movies:
         (title, year, category, seen, percentage, percentage_checked_at)
         """
         self.__ensure_schema()
+        movies = list(movies)
 
         if self.__can_upsert:
             self.__c.executemany(
@@ -90,6 +91,7 @@ class Movies:
                 'percentage_checked_at=excluded.percentage_checked_at',
                 movies,
             )
+            self.__delete_removed_titles(movies)
         else:
             self.__c.execute(f'DELETE FROM {self.__db_name}')
             self.__c.executemany(
@@ -99,6 +101,27 @@ class Movies:
                 movies,
             )
         self.__connection.commit()
+
+    def __delete_removed_titles(self, movies):
+        """
+        Removes rows for titles no longer present in the current run's catalogue (e.g.
+        a movie that has left Netflix) - upserting alone only adds/updates rows, it
+        never removes ones that stopped being returned by TMDB. Without this, a removed
+        title would linger in the database forever, still looking like it's on Netflix.
+        """
+        self.__c.execute('CREATE TEMP TABLE IF NOT EXISTS current_titles (title TEXT, year INTEGER)')
+        self.__c.execute('DELETE FROM current_titles')
+        self.__c.executemany(
+            'INSERT INTO current_titles (title, year) VALUES (?, ?)',
+            [(title, year) for title, year, *_ in movies],
+        )
+        self.__c.execute(
+            f'DELETE FROM {self.__db_name} WHERE NOT EXISTS ('
+            'SELECT 1 FROM current_titles '
+            f'WHERE current_titles.title = {self.__db_name}.title '
+            f'AND current_titles.year = {self.__db_name}.year)'
+        )
+        self.__c.execute('DROP TABLE current_titles')
 
     def get_cached_percentage(self, title, year):
         """

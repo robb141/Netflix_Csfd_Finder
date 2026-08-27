@@ -82,7 +82,7 @@ conn = sqlite3.connect('movies.db')
 rows = conn.execute('SELECT title, year, percentage FROM netflix WHERE seen = 0 ORDER BY percentage DESC').fetchall()
 ```
 
-Since the `netflix` table is rewritten (upserted) on every run based on the current TMDB catalogue, a title that leaves Netflix will stop being updated but its old row won't be deleted automatically - if you want the table to only ever reflect the current catalogue, delete `movies.db` before a run to start fresh. Note that this also wipes both caches: the next run will refetch every unseen title's percentage, *and* re-scrape every rated film's detail page from scratch (the `csfd_films` cache is normally the bigger time-saver of the two, since it covers the user's entire rated-titles list, not just the unseen ones).
+The `netflix` table always reflects the current TMDB catalogue: each run upserts every title TMDB returns and deletes any row for a title that's no longer returned (e.g. one that left Netflix), so it never accumulates stale entries. If you want to wipe it anyway (e.g. to also clear the percentage cache and force every unseen title to be re-rated from scratch), delete `movies.db` before a run to start fresh - note that this also wipes the separate `csfd_films` cache, so every rated film's detail page gets re-scraped too (that cache is normally the bigger time-saver of the two, since it covers the user's entire rated-titles list, not just the unseen ones).
 
 ## Testing
 
