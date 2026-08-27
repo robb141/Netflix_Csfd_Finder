@@ -93,6 +93,23 @@ class GetGenreTests(unittest.TestCase):
         self.assertEqual(main.get_genre(soup), '')
 
 
+class GetRatingsPageCountTests(unittest.TestCase):
+    """
+    Fixture: tests/fixtures/csfd_ratings_pagination.html - the real `div.pagination`
+    block from a csfd user's ratings-list page with many pages (numbered "1 2 3 ...
+    17", with "..." gaps for skipped ranges), used to show progress as a real
+    percentage instead of just a running count.
+    """
+
+    def test_reads_last_page_number_from_pagination(self):
+        soup = load_fixture('csfd_ratings_pagination.html')
+        self.assertEqual(main.get_ratings_page_count(soup), 17)
+
+    def test_missing_pagination_block_returns_one(self):
+        soup = BeautifulSoup('<html><body>only one page, no pagination shown</body></html>', 'html.parser')
+        self.assertEqual(main.get_ratings_page_count(soup), 1)
+
+
 class GetCsfdRatingPercentageTests(unittest.TestCase):
     """
     Fixture: tests/fixtures/csfd_film_matrix.html - same film page, which also

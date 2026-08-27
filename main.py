@@ -16,6 +16,7 @@ Exceptions:
 '''
 import os
 import re
+import sys
 import csv
 import logging
 import argparse
@@ -82,6 +83,33 @@ def parse_args():
     return parser.parse_args()
 
 
+def print_progress(label, current, total):
+    """
+    Renders a single-line animated percentage progress bar directly to stdout.
+
+    This is intentionally NOT logged: it's a terminal-only "something is happening"
+    cue for interactive use, not a record of the run, so it's skipped entirely when
+    stdout isn't a real terminal (e.g. redirected to a file, as in the cron example
+    in the README) to avoid dumping a stream of overlapping \\r-updated lines there.
+    """
+    if not sys.stdout.isatty():
+        return
+    current = min(current, total)
+    width = 30
+    filled = int(width * current / total)
+    bar = '#' * filled + '-' * (width - filled)
+    pct = int(100 * current / total)
+    sys.stdout.write(f'\r{label}: [{bar}] {pct}% ({current}/{total})')
+    sys.stdout.flush()
+
+
+def finish_progress():
+    """Moves the cursor past the current progress line, if one was being drawn."""
+    if sys.stdout.isatty():
+        sys.stdout.write('\n')
+        sys.stdout.flush()
+
+
 def get_csfd_soup(url, params=None):
     # Sleep some time before making a request to not overwhelm the website
     sleep(randint(1, 3))
@@ -137,9 +165,10 @@ def get_netflix_titles():
                 date = result.get(date_field) or ''
                 year = date[:4]
                 titles.append((title, year, category))
-            logger.info(f'-- Fetched {category} page {page}/{total_pages} ({len(titles)} titles so far)...')
+            print_progress(f'Fetching {category} titles', page, total_pages)
             page += 1
             sleep(0.2)
+        finish_progress()
     return titles
 
 
@@ -194,6 +223,23 @@ def get_genre(soup):
     return genres.get_text(' ', strip=True) if genres else ''
 
 
+def get_ratings_page_count(soup):
+    """
+    Reads the total number of ratings pages from the pagination block on a csfd
+    ratings-list page (e.g. "1 2 3 ... 17"), so progress can be reported as a
+    percentage instead of just a running count. Returns 1 if there's no pagination
+    block at all (i.e. everything fits on a single page).
+    """
+    pagination = soup.select_one('div.pagination')
+    if pagination is None:
+        return 1
+    page_numbers = [
+        int(text) for el in pagination.find_all(['a', 'span'])
+        if (text := el.get_text(strip=True)).isdigit()
+    ]
+    return max(page_numbers) if page_numbers else 1
+
+
 def get_csfd_movies():
     """
     Gets all the user's rated urls and then
@@ -205,18 +251,20 @@ def get_csfd_movies():
     csfd_movies = []
     url_rating = get_user_url(get_csfd_soup(CSFD_SEARCH_URL, {'q': user}))
     soup_rating = get_csfd_soup(url_rating)
+    total_rating_pages = get_ratings_page_count(soup_rating)
 
     # Takes url's of every rated movie across all pages.
     rating_page = 1
     while True:
         for elem in soup_rating.find_all('h3', class_='film-title-inline'):
             movie_urls.append(elem.a['href'])
-        logger.info(f'-- Fetched ratings page {rating_page} ({len(movie_urls)} rated titles so far)...')
+        print_progress('Fetching csfd ratings pages', rating_page, total_rating_pages)
         next_page = soup_rating.find('a', class_='page-next')
         if next_page is None:
             break
         soup_rating = get_csfd_soup(CSFD_BASE + next_page['href'])
         rating_page += 1
+    finish_progress()
 
     # Takes required information from every rated movie. A film's titles/year/genre
     # never change once scraped, so a permanent cache (keyed by href, shared across
