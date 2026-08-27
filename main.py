@@ -4,7 +4,8 @@ Look for these titles on csfd.cz and save all titles that USER hasn't rated (see
 to a sqlite3 database and a csv file.
 
 To specify:
-- user on csfd
+- user on csfd, either as a command-line argument (`python main.py <user>`, so this
+  can run unattended e.g. from cron) or, if omitted, via an interactive prompt.
 
 Requires the environment variable TMDB_API_KEY (a free key from
 https://www.themoviedb.org/settings/api).
@@ -16,6 +17,7 @@ import os
 import re
 import csv
 import logging
+import argparse
 from datetime import datetime, timezone
 from time import sleep, time
 from random import randint
@@ -57,7 +59,21 @@ csv_result = 'movies_not_seen_on_csfd.csv'
 # than this is treated as stale and refetched instead of reused.
 PERCENTAGE_CACHE_MAX_AGE_DAYS = 180
 
-user = input('What csfd user would you like to compare movies to? ')
+# Resolved in the `__main__` guard below (from a CLI arg, or an interactive prompt if
+# omitted) rather than at import time, so importing this module - e.g. from tests -
+# never blocks on stdin. Functions below read this as a module-level global.
+user = None
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Find Netflix (Czech Republic) titles a given csfd.cz user hasn't rated yet."
+    )
+    parser.add_argument(
+        'user', nargs='?', default=None,
+        help='csfd.cz username to compare against. If omitted, you will be prompted for it.',
+    )
+    return parser.parse_args()
 
 
 def get_csfd_soup(url, params=None):
@@ -332,6 +348,7 @@ def compare_and_save(netflix_titles, csfd_movies):
 
 # Main
 if __name__ == '__main__':
+    user = parse_args().user or input('What csfd user would you like to compare movies to? ')
     start = time()
     try:
         netflix_tuples = get_netflix_titles()

@@ -26,20 +26,56 @@ export TMDB_API_KEY=your_tmdb_api_key
 ## Usage
 
 ```bash
+python main.py <csfd_username>
+```
+
+The csfd.cz username can also be omitted, in which case you'll be prompted for it interactively:
+
+```bash
 python main.py
 ```
 
-The script will prompt you for one thing:
+Passing it as an argument makes the script non-interactive, so it can be run unattended - e.g. from cron, to periodically re-check for newly-added Netflix titles and refresh any percentage older than 180 days:
 
-- **csfd user**: the csfd.cz username to compare the Netflix catalogue against.
+```cron
+0 9 * * 0 cd /path/to/Netflix_Csfd_Finder && TMDB_API_KEY=... /path/to/python main.py your_csfd_username >> cron.log 2>&1
+```
 
-The run can take a while, since every Netflix title not already rated by the user requires its own csfd.cz search-and-lookup request. Progress is logged to the console as it goes.
+The run can take a while, since every Netflix title not already rated by the user requires its own csfd.cz search-and-lookup request (unless its percentage is still cached - see below). Progress is logged to the console as it goes.
 
 ## Output
 
 - **`movies.db`** (SQLite) — a `netflix` table with every Netflix CZ title found (movies and TV), each row containing `title`, `year`, `category`, a `seen` flag (whether the given user has rated it), `percentage` (csfd's rating, only populated for unseen titles), and `percentage_checked_at` (when that percentage was last fetched, used for the 180-day cache). Rows persist across runs - an existing row is updated in place rather than the table being wiped, which is what makes the percentage cache possible.
 - **`movies_not_seen_on_csfd.csv`** (UTF-16 encoded) — only the titles the user hasn't rated yet, with columns `title`, `year`, `category`, `percentage`.
 - **`netflix_csfd_finder.log`** — a log of the run (also printed to the console), including titles skipped because no confident csfd match was found, cached-percentage reuse, and a full traceback if the run fails.
+
+### Querying `movies.db`
+
+`movies.db` is a plain SQLite database, so it can be inspected with the `sqlite3` CLI (usually already installed) or any SQLite browser/library, without running the script again. For example:
+
+```bash
+# Open an interactive shell on the database
+sqlite3 movies.db
+
+# Unseen titles, best-rated first
+sqlite3 movies.db "SELECT title, year, percentage FROM netflix WHERE seen = 0 ORDER BY percentage DESC;"
+
+# Everything the given user has already rated
+sqlite3 movies.db "SELECT title, year FROM netflix WHERE seen = 1;"
+
+# How stale each cached percentage is
+sqlite3 movies.db "SELECT title, percentage, percentage_checked_at FROM netflix WHERE percentage IS NOT NULL;"
+```
+
+Or from Python, using the standard library directly (no need to go through `Movies` in `my_database.py`, which is just a thin insert/upsert helper used by `main.py`):
+
+```python
+import sqlite3
+conn = sqlite3.connect('movies.db')
+rows = conn.execute('SELECT title, year, percentage FROM netflix WHERE seen = 0 ORDER BY percentage DESC').fetchall()
+```
+
+Since the table is rewritten (upserted) on every run based on the current TMDB catalogue, a title that leaves Netflix will stop being updated but its old row won't be deleted automatically - if you want the table to only ever reflect the current catalogue, delete `movies.db` before a run to start fresh (this also clears the percentage cache, so the next run will refetch every unseen title's rating).
 
 ## Testing
 
