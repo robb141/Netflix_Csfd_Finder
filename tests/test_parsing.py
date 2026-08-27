@@ -218,6 +218,20 @@ class GetUserUrlTests(unittest.TestCase):
             main.get_user_url(empty_soup)
 
 
+class IsLatinScriptTests(unittest.TestCase):
+
+    def test_latin_titles_are_latin_script(self):
+        for title in ('The Shawshank Redemption', 'Vykoupení z věznice Shawshank', 'Amélie', "Léon: The Professional"):
+            self.assertTrue(main.is_latin_script(title), title)
+
+    def test_non_latin_scripts_are_rejected(self):
+        for title in ('ப்யார் ப்ரேமா கல்யாணம்', '新世紀エヴァンゲリオン', 'Москва слезам не верит'):
+            self.assertFalse(main.is_latin_script(title), title)
+
+    def test_empty_string_counts_as_latin(self):
+        self.assertTrue(main.is_latin_script(''))
+
+
 class GetNetflixTitlesCleanupTests(unittest.TestCase):
     """
     Exercises the title-cleanup logic inline in get_netflix_titles() (stripping
@@ -261,6 +275,32 @@ class GetNetflixTitlesCleanupTests(unittest.TestCase):
         with patch.object(main, 'TMDB_API_KEY', None):
             with self.assertRaises(Exception):
                 main.get_netflix_titles()
+
+    def test_non_latin_original_title_falls_back_to_english(self):
+        # No Czech translation was available for this title, so the discover
+        # result comes back with the original (Tamil) title - get_netflix_titles
+        # must notice that and fetch the English title instead, via a follow-up
+        # call to /movie/{id}.
+        movie_response = self._tmdb_response([
+            {'id': 42, 'title': 'ப்யார் ப்ரேமா கல்யாணம்', 'release_date': '2020-01-01'},
+        ])
+        tv_response = self._tmdb_response([])
+        english_fallback_response = MagicMock()
+        english_fallback_response.raise_for_status.return_value = None
+        english_fallback_response.json.return_value = {'title': 'Love Prema Kalyanam'}
+
+        with patch.object(main, 'TMDB_API_KEY', 'fake-test-key'), \
+             patch.object(main.requests, 'get',
+                           side_effect=[movie_response, english_fallback_response, tv_response]) as mock_get, \
+             patch.object(main, 'sleep', return_value=None):
+            titles = main.get_netflix_titles()
+
+        self.assertEqual(mock_get.call_count, 3)
+        # The follow-up call must ask for the English title of the same movie id.
+        fallback_call = mock_get.call_args_list[1]
+        self.assertEqual(fallback_call.args[0], f'{main.TMDB_BASE}/movie/42')
+        self.assertEqual(fallback_call.kwargs['params']['language'], 'en-US')
+        self.assertIn(('Love Prema Kalyanam', '2020', 'movie'), titles)
 
 
 if __name__ == '__main__':

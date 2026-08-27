@@ -134,6 +134,40 @@ def get_tmdb_page(endpoint, page):
     return response.json()
 
 
+# Covers Basic Latin, Latin-1 Supplement, and Latin Extended-A/B - i.e. essentially
+# every accented Latin character used by European languages (Czech, French, German,
+# Vietnamese, etc.), while excluding non-Latin scripts (Tamil, Devanagari, Cyrillic,
+# CJK, Arabic, ...).
+_LATIN_SCRIPT_MAX_CODEPOINT = 0x2AF
+
+
+def is_latin_script(text):
+    """
+    Returns True if `text` contains only Latin-script letters (punctuation, digits,
+    and spaces don't count either way). Used to detect when TMDB's discover API
+    fell back to a title in its non-Latin original script because no Czech
+    translation was registered for it - unreadable for most users even though it's
+    technically the correct title.
+    """
+    return all(not ch.isalpha() or ord(ch) <= _LATIN_SCRIPT_MAX_CODEPOINT for ch in text)
+
+
+def get_english_title(category, tmdb_id):
+    """
+    Fetches the English title/name for a single TMDB movie/tv id - used as a
+    fallback only for the (usually rare) titles where the Czech-localized discover
+    result came back in a non-Latin original script. Returns None if TMDB doesn't
+    have an English title for it either.
+    """
+    response = requests.get(f'{TMDB_BASE}/{category}/{tmdb_id}', params={
+        'api_key': TMDB_API_KEY,
+        'language': 'en-US',
+    })
+    response.raise_for_status()
+    data = response.json()
+    return data.get('title') or data.get('name')
+
+
 def get_netflix_titles():
     """
     Get all movies and TV shows currently available on Netflix in the Czech Republic from TMDB.
@@ -162,6 +196,13 @@ def get_netflix_titles():
                 if not title:
                     continue
                 title = re.sub(r'[\(].*?[\)]', '', title).replace('’', "'").strip()
+                if not is_latin_script(title):
+                    # No Czech translation was available, so TMDB fell back to the
+                    # original-language title - fall back further to English rather
+                    # than surface an unreadable script to the user.
+                    english_title = get_english_title(category, result['id'])
+                    if english_title:
+                        title = re.sub(r'[\(].*?[\)]', '', english_title).replace('’', "'").strip()
                 date = result.get(date_field) or ''
                 year = date[:4]
                 titles.append((title, year, category))
@@ -284,11 +325,18 @@ def get_csfd_movies():
         try:
             soup = get_csfd_soup(CSFD_BASE + movie)
             titles, year, genre = get_titles(soup), get_year(soup), get_genre(soup)
-            csfd_movies.append((titles, year, genre))
-            film_cache.set(movie, titles, year, genre)
-            cache_misses += 1
         except Exception as e:
-            logger.warning(f'-- Skipping {movie}, failed to parse: {e}')
+            logger.warning(f'-- Skipping {movie}, failed to fetch/parse: {e}')
+            continue
+        # The fetch/parse succeeded, so this movie counts regardless of whether
+        # caching it below works - a cache-write failure (e.g. movies.db becoming
+        # unwritable mid-run) shouldn't drop an otherwise-good result.
+        csfd_movies.append((titles, year, genre))
+        cache_misses += 1
+        try:
+            film_cache.set(movie, titles, year, genre)
+        except Exception as e:
+            logger.warning(f'-- Fetched {movie} OK but could not cache it, will re-fetch next time: {e}')
     logger.info(
         f'Film metadata cache: {cache_hits} served from cache, '
         f'{cache_misses} freshly fetched.'
