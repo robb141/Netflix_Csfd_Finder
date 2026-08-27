@@ -20,8 +20,7 @@ csfd.cz is scraped with `curl_cffi` impersonating Chrome's TLS fingerprint (plai
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env
-# then edit .env and paste your TMDB API key in
+echo "TMDB_API_KEY=your_tmdb_api_key" > .env
 ```
 
 `main.py` loads `.env` automatically on startup (via `python-dotenv`) - `.env` is gitignored, so your key stays local and never gets committed, and you don't need to `export` it in your shell every session. If you'd rather use a real environment variable instead (e.g. `export TMDB_API_KEY=...`, or setting it in a CI/cron environment), that works too and takes priority over `.env`.
