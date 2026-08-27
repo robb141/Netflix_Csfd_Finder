@@ -137,6 +137,7 @@ def get_netflix_titles():
                 date = result.get(date_field) or ''
                 year = date[:4]
                 titles.append((title, year, category))
+            logger.info(f'-- Fetched {category} page {page}/{total_pages} ({len(titles)} titles so far)...')
             page += 1
             sleep(0.2)
     return titles
@@ -206,13 +207,16 @@ def get_csfd_movies():
     soup_rating = get_csfd_soup(url_rating)
 
     # Takes url's of every rated movie across all pages.
+    rating_page = 1
     while True:
         for elem in soup_rating.find_all('h3', class_='film-title-inline'):
             movie_urls.append(elem.a['href'])
+        logger.info(f'-- Fetched ratings page {rating_page} ({len(movie_urls)} rated titles so far)...')
         next_page = soup_rating.find('a', class_='page-next')
         if next_page is None:
             break
         soup_rating = get_csfd_soup(CSFD_BASE + next_page['href'])
+        rating_page += 1
 
     # Takes required information from every rated movie. A film's titles/year/genre
     # never change once scraped, so a permanent cache (keyed by href, shared across
