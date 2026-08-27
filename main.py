@@ -8,7 +8,8 @@ To specify:
   can run unattended e.g. from cron) or, if omitted, via an interactive prompt.
 
 Requires the environment variable TMDB_API_KEY (a free key from
-https://www.themoviedb.org/settings/api).
+https://www.themoviedb.org/settings/api). Set it in a .env file in the project
+root (see .env.example) instead of exporting it in your shell every time.
 
 Exceptions:
 - Movie on csfd must not start with '(' or that movie title will be ignored
@@ -25,8 +26,13 @@ from random import randint
 import requests
 from curl_cffi import requests as csfd_requests
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 
 from my_database import Movies, CsfdFilmCache
+
+# Loads variables from a .env file in the project root into the environment, if one
+# exists (see .env.example) - doesn't override a variable already set in the shell.
+load_dotenv()
 
 # Configured on the root logger (not this module's own logger) so that every module's
 # `logging.getLogger(__name__)` - including my_database.py's - propagates up to these

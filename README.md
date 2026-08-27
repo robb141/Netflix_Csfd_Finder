@@ -20,8 +20,11 @@ csfd.cz is scraped with `curl_cffi` impersonating Chrome's TLS fingerprint (plai
 
 ```bash
 pip install -r requirements.txt
-export TMDB_API_KEY=your_tmdb_api_key
+cp .env.example .env
+# then edit .env and paste your TMDB API key in
 ```
+
+`main.py` loads `.env` automatically on startup (via `python-dotenv`) - `.env` is gitignored, so your key stays local and never gets committed, and you don't need to `export` it in your shell every session. If you'd rather use a real environment variable instead (e.g. `export TMDB_API_KEY=...`, or setting it in a CI/cron environment), that works too and takes priority over `.env`.
 
 ## Usage
 
@@ -38,8 +41,10 @@ python main.py
 Passing it as an argument makes the script non-interactive, so it can be run unattended - e.g. from cron, to periodically re-check for newly-added Netflix titles and refresh any percentage older than 180 days:
 
 ```cron
-0 9 * * 0 cd /path/to/Netflix_Csfd_Finder && TMDB_API_KEY=... /path/to/python main.py your_csfd_username >> cron.log 2>&1
+0 9 * * 0 cd /path/to/Netflix_Csfd_Finder && /path/to/python main.py your_csfd_username >> cron.log 2>&1
 ```
+
+(the `.env` file gets picked up automatically since cron `cd`s into the project directory first - no need to pass `TMDB_API_KEY` inline)
 
 The run can take a while, since every Netflix title not already rated by the user requires its own csfd.cz search-and-lookup request (unless its percentage is still cached - see below). Progress is logged to the console as it goes.
 
