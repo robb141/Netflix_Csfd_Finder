@@ -16,12 +16,13 @@ temp-directory file per test - still a real, file-backed sqlite3 connection
 (not ':memory:'), which matters here because several tests need data written
 by one Movies()/compare_and_save() call to still be there for a second one.
 """
+import csv
 import os
 import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import my_database
 from my_database import Movies
@@ -207,6 +208,57 @@ class CreateAndInsertTableUpsertTests(TempDbTestCase):
         )
 
 
+class UpsertRowsAndPruneTests(TempDbTestCase):
+    """
+    Covers the incremental-persistence API split out of create_and_insert_table:
+    upsert_rows (batch write, commit, no pruning) and prune_missing_titles
+    (end-of-run delete of titles that left the catalogue).
+    """
+
+    def _titles(self, movie):
+        return {row[1] for row in movie.get_data('1=1')}
+
+    def test_can_upsert_is_true_on_a_fresh_database(self):
+        # A fresh db gets the UNIQUE(title, year) index, so incremental commits
+        # are available - the property must also populate the flag itself rather
+        # than returning the un-migrated default.
+        self.assertTrue(Movies().can_upsert)
+
+    def test_upsert_rows_persists_a_batch_visible_to_a_second_instance(self):
+        Movies().upsert_rows([
+            ('First Movie', '2020', 'movie', False, 60, 'ts-1'),
+            ('Second Movie', '2021', 'movie', False, 70, 'ts-2'),
+        ])
+
+        movie = Movies()
+        self.assertEqual(self._titles(movie), {'First Movie', 'Second Movie'})
+        self.assertEqual(movie.get_cached_percentage('First Movie', '2020'), (60, 'ts-1'))
+
+    def test_upsert_rows_updates_in_place_and_never_prunes(self):
+        movie = Movies()
+        movie.upsert_rows([('Kept Movie', '2020', 'movie', False, 10, 'ts-old')])
+        # A second batch that omits 'Kept Movie' must NOT delete it (a batch is a
+        # slice of the run, not the whole catalogue), and must update a row it
+        # does carry rather than duplicate it.
+        movie.upsert_rows([('Kept Movie', '2020', 'tv', True, 99, 'ts-new')])
+        movie.upsert_rows([('Later Movie', '2022', 'movie', False, 50, 'ts-2')])
+
+        self.assertEqual(self._titles(movie), {'Kept Movie', 'Later Movie'})
+        kept = next(r for r in movie.get_data('1=1') if r[1] == 'Kept Movie')
+        self.assertEqual((kept[3], kept[4], kept[5], kept[6]), ('tv', 1, 99, 'ts-new'))
+
+    def test_prune_missing_titles_drops_absent_rows_and_keeps_present_ones(self):
+        movie = Movies()
+        movie.upsert_rows([
+            ('Staying Movie', '2020', 'movie', False, 60, 'ts-1'),
+            ('Leaving Movie', '2019', 'movie', True, None, None),
+        ])
+
+        movie.prune_missing_titles([('Staying Movie', '2020', 'movie', False, 60, 'ts-1')])
+
+        self.assertEqual(self._titles(movie), {'Staying Movie'})
+
+
 class CompareAndSaveTests(TempDbTestCase):
     """
     Exercises main.compare_and_save end-to-end against a real (temp) sqlite
@@ -272,9 +324,7 @@ class CompareAndSaveTests(TempDbTestCase):
         mock_rating_first.assert_called_once_with('Movie D', '2021')
 
         # Second run for the same still-unseen title: the freshly-written
-        # cache should short-circuit the lookup entirely. A fresh list of
-        # netflix_titles is passed both times since compare_and_save extends
-        # each tuple in place.
+        # cache should short-circuit the lookup entirely.
         with patch.object(main, 'get_rating_for_title') as mock_rating_second:
             result = main.compare_and_save([('Movie D', '2021', 'movie')], [])
 
@@ -282,6 +332,77 @@ class CompareAndSaveTests(TempDbTestCase):
         self.assertEqual(result, ['Movie D'])
         row = self._seen_flag('Movie D')
         self.assertEqual(row[5], 70)
+
+    def test_match_is_accent_and_case_insensitive_with_year_guard(self):
+        # Netflix stores the ascii-folded English title; the user's csfd film is
+        # listed only under its accented Czech title. Same year -> seen, and no
+        # rating lookup happens.
+        netflix_titles = [('Klub rvacu', '1999', 'movie', frozenset({'klub rvacu', 'fight club'}))]
+        csfd_movies = [(['Klub rváčů', 'Fight Club'], '1999', 'Drama')]
+
+        with patch.object(main, 'get_rating_for_title') as mock_rating:
+            result = main.compare_and_save(netflix_titles, csfd_movies)
+
+        mock_rating.assert_not_called()
+        self.assertEqual(result, [])
+        self.assertEqual(self._seen_flag('Klub rvacu')[4], 1)
+
+    def test_same_normalized_title_but_wrong_year_is_not_a_match(self):
+        netflix_titles = [('Klub rvacu', '2010', 'movie', frozenset({'klub rvacu'}))]
+        csfd_movies = [(['Klub rváčů'], '1999', 'Drama')]
+
+        with patch.object(main, 'get_rating_for_title', return_value=90) as mock_rating:
+            result = main.compare_and_save(netflix_titles, csfd_movies)
+
+        mock_rating.assert_called_once_with('Klub rvacu', '2010')
+        self.assertEqual(result, ['Klub rvacu'])
+
+    def _read_csv(self):
+        with open(self.csv_path, encoding=main.encoding, newline='') as f:
+            return list(csv.reader(f))
+
+    def test_committed_batches_survive_a_mid_run_crash(self):
+        # Shrink the batch to 2 rows so a short title list still spans several
+        # commits, then blow up on the 3rd rating lookup - by then the first
+        # batch ('Movie 1' + 'Movie 2') has been committed, the rest has not.
+        netflix_titles = [(f'Movie {n}', '2020', 'movie') for n in range(1, 6)]
+
+        with patch.object(my_database, 'DB_COMMIT_BATCH_SIZE', 2), \
+                patch.object(main, 'get_rating_for_title',
+                             side_effect=[61, 62, RuntimeError('csfd went down')]):
+            with self.assertRaises(RuntimeError):
+                main.compare_and_save(netflix_titles, [])
+
+        movie = Movies()
+        titles = {row[1] for row in movie.get_data('1=1')}
+        self.assertEqual(titles, {'Movie 1', 'Movie 2'})
+        self.assertEqual(movie.get_cached_percentage('Movie 1', '2020'), (61, ANY))
+
+    def test_csv_is_written_atomically_on_a_normal_run(self):
+        with patch.object(main, 'get_rating_for_title', return_value=75):
+            main.compare_and_save([('Movie X', '2020', 'movie')], [])
+
+        self.assertTrue(os.path.exists(self.csv_path))
+        self.assertEqual(
+            self._read_csv(),
+            [['title', 'year', 'category', 'percentage'], ['Movie X', '2020', 'movie', '75']],
+        )
+        # The temp file it was built in must not be left behind.
+        leftovers = [n for n in os.listdir(self._tmpdir.name) if n.endswith('.csv.tmp')]
+        self.assertEqual(leftovers, [])
+
+    def test_a_crashing_run_leaves_the_existing_csv_untouched(self):
+        with open(self.csv_path, 'wb') as f:
+            f.write(b'PREVIOUS RUN CSV - MUST NOT BE TRUNCATED')
+
+        with patch.object(main, 'get_rating_for_title', side_effect=RuntimeError('boom')):
+            with self.assertRaises(RuntimeError):
+                main.compare_and_save([('Movie Y', '2020', 'movie')], [])
+
+        with open(self.csv_path, 'rb') as f:
+            self.assertEqual(f.read(), b'PREVIOUS RUN CSV - MUST NOT BE TRUNCATED')
+        leftovers = [n for n in os.listdir(self._tmpdir.name) if n.endswith('.csv.tmp')]
+        self.assertEqual(leftovers, [])
 
 
 if __name__ == '__main__':

@@ -4,6 +4,13 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
+# compare_and_save persists not-yet-seen titles to the netflix table in batches of
+# this many rows during its run (see Movies.upsert_rows) instead of in a single
+# write at the very end, so a crash partway through keeps the csfd rating lookups
+# already done - the slow, network-bound part of a run - rather than throwing the
+# whole run's progress away.
+DB_COMMIT_BATCH_SIZE = 200
+
 
 class Movies:
     def __init__(self):
@@ -37,7 +44,10 @@ class Movies:
                 'percentage_checked_at TEXT)'
             )
         except sqlite3.OperationalError:
-            logger.info('Table already exists!')
+            # Table already exists - the expected case on every run after the first.
+            # __ensure_schema() runs on every get_cached_percentage() call, so logging
+            # here would emit one line per title processed.
+            pass
 
         # Existing databases created before percentage caching was added won't have
         # this column - add it, tolerating it already being there.
@@ -66,12 +76,44 @@ class Movies:
 
         self.__connection.commit()
 
+    @property
+    def can_upsert(self):
+        """
+        Whether incremental, per-batch persistence is possible: True once a
+        UNIQUE(title, year) index is in place, so rows can be upserted (ON CONFLICT)
+        without touching any other row. False for a pre-existing database that still
+        holds duplicate (title, year) rows, where the only safe write is the
+        wipe-and-reinsert create_and_insert_table does once at end of run - which
+        can't be split into batches. Ensures the schema first so the flag is set.
+        """
+        self.__ensure_schema()
+        return self.__can_upsert
+
+    def __upsert_movies(self, movies):
+        """
+        Upserts each (title, year, category, seen, percentage, percentage_checked_at)
+        row keyed on (title, year), leaving rows absent from `movies` untouched.
+        Requires __can_upsert (a UNIQUE(title, year) index); the caller commits.
+        """
+        self.__c.executemany(
+            f'INSERT INTO {self.__db_name}'
+            '(title, year, category, seen, percentage, percentage_checked_at) '
+            'VALUES (?,?,?,?,?,?) '
+            'ON CONFLICT(title, year) DO UPDATE SET '
+            'category=excluded.category, '
+            'seen=excluded.seen, '
+            'percentage=excluded.percentage, '
+            'percentage_checked_at=excluded.percentage_checked_at',
+            movies,
+        )
+
     def create_and_insert_table(self, movies):
         """
         Ensures the table/schema exists, then either upserts each row keyed on
         (title, year) - preserving any previously-stored percentage/timestamp for rows
         not present in `movies`, and updating rows that are - or, if upserting isn't
         possible (see __ensure_schema), falls back to wiping and reinserting everything.
+        Prunes rows whose (title, year) left the catalogue, then commits.
 
         `movies` is an iterable of tuples:
         (title, year, category, seen, percentage, percentage_checked_at)
@@ -80,17 +122,7 @@ class Movies:
         movies = list(movies)
 
         if self.__can_upsert:
-            self.__c.executemany(
-                f'INSERT INTO {self.__db_name}'
-                '(title, year, category, seen, percentage, percentage_checked_at) '
-                'VALUES (?,?,?,?,?,?) '
-                'ON CONFLICT(title, year) DO UPDATE SET '
-                'category=excluded.category, '
-                'seen=excluded.seen, '
-                'percentage=excluded.percentage, '
-                'percentage_checked_at=excluded.percentage_checked_at',
-                movies,
-            )
+            self.__upsert_movies(movies)
             self.__delete_removed_titles(movies)
         else:
             self.__c.execute(f'DELETE FROM {self.__db_name}')
@@ -100,6 +132,40 @@ class Movies:
                 'VALUES (?,?,?,?,?,?)',
                 movies,
             )
+        self.__connection.commit()
+
+    def upsert_rows(self, rows):
+        """
+        Ensures the schema exists, upserts one batch of rows keyed on (title, year)
+        with the same ON CONFLICT SQL as create_and_insert_table, and commits - so
+        the batch survives a later crash in the same run. Does NOT prune: a batch is
+        only a slice of the run, not the whole catalogue, so missing (title, year)s
+        say nothing about what left Netflix. The caller prunes once, at the end, via
+        prune_missing_titles.
+
+        A no-op when can_upsert is False: without the UNIQUE(title, year) index the
+        only way to write is to wipe the table, which can't be done incrementally,
+        so such a database defers entirely to a single end-of-run
+        create_and_insert_table call.
+
+        `rows` is an iterable of tuples:
+        (title, year, category, seen, percentage, percentage_checked_at)
+        """
+        self.__ensure_schema()
+        if not self.__can_upsert:
+            return
+        self.__upsert_movies(list(rows))
+        self.__connection.commit()
+
+    def prune_missing_titles(self, movies):
+        """
+        Deletes rows whose (title, year) is not among `movies`, then commits - the
+        end-of-run counterpart to the incremental upsert_rows batches, dropping
+        titles that have left the Netflix catalogue (upserting alone never removes
+        rows). `movies` must be the full current catalogue, not a single batch.
+        """
+        self.__ensure_schema()
+        self.__delete_removed_titles(list(movies))
         self.__connection.commit()
 
     def __delete_removed_titles(self, movies):
