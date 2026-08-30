@@ -241,10 +241,109 @@ class FindCsfdFilmUrlTests(unittest.TestCase):
         mock_fetch.assert_called_once_with(main.CSFD_SEARCH_URL, {'q': 'Matrix'})
         self.assertEqual(url, main.CSFD_BASE + '/film/9498-matrix-revolutions/prehled/')
 
-    def test_falls_back_to_first_result_when_no_year_matches(self):
+    def test_no_match_returns_none_instead_of_guessing(self):
+        # csfd's search is a loose full-text match, so its top hit for a query is
+        # often a same-topic-but-wrong (or entirely unrelated) film rather than the
+        # one being looked for - blindly taking the first result when no year
+        # matches has been observed to misreport ratings for titles csfd doesn't
+        # actually have. No year match must mean "no match", not "closest guess".
         with patch.object(main, 'get_csfd_soup', return_value=self.soup):
             url = main.find_csfd_film_url('Matrix', '1985')
-        self.assertEqual(url, main.CSFD_BASE + '/film/9499-matrix/prehled/')
+        self.assertIsNone(url)
+
+    def test_no_year_given_returns_none_without_fetching(self):
+        with patch.object(main, 'get_csfd_soup') as mock_fetch:
+            url = main.find_csfd_film_url('Matrix', '')
+        mock_fetch.assert_not_called()
+        self.assertIsNone(url)
+
+    def test_no_candidates_returns_none(self):
+        empty_soup = BeautifulSoup('<html><body></body></html>', 'html.parser')
+        with patch.object(main, 'get_csfd_soup', return_value=empty_soup):
+            url = main.find_csfd_film_url('Some Nonexistent Title', '2003')
+        self.assertIsNone(url)
+
+
+def _search_result_soup(entries):
+    """
+    Builds a minimal csfd search-results soup from (title, year, href) triples,
+    in the given (relevance) order - mirrors the real h3.film-title-nooverflow /
+    a.film-title-name markup that find_csfd_film_url reads.
+    """
+    items = ''.join(
+        f'<h3 class="film-title-nooverflow">'
+        f'<a href="{href}" class="film-title-name">{title}</a> '
+        f'<span class="film-title-info"><span class="info">({year})</span></span>'
+        f'</h3>'
+        for title, year, href in entries
+    )
+    return BeautifulSoup(f'<html><body>{items}</body></html>', 'html.parser')
+
+
+class FindCsfdFilmUrlCrossSignalTests(unittest.TestCase):
+    """
+    Regression coverage for two real false-positive matches found live after the
+    year-match-only fix: csfd's search is a loose full-text match, so a lone
+    year match (regardless of rank) or a lone title match (regardless of year
+    gap) can each land on the wrong film. find_csfd_film_url now requires
+    title+year agreement, or graduated fallbacks bounded by rank/tolerance - see
+    its docstring.
+    """
+
+    def test_prefers_exact_title_and_year_match_over_either_alone(self):
+        soup = _search_result_soup([
+            ('Something Else', '1999', '/film/1-wrong-title-right-year/prehled/'),
+            ('Matrix', '2010', '/film/2-right-title-wrong-year/prehled/'),
+            ('Matrix', '1999', '/film/3-both-match/prehled/'),
+        ])
+        with patch.object(main, 'get_csfd_soup', return_value=soup):
+            url = main.find_csfd_film_url('Matrix', '1999')
+        self.assertEqual(url, main.CSFD_BASE + '/film/3-both-match/prehled/')
+
+    def test_year_only_match_accepted_within_top_ranks(self):
+        # Real case: "Fight Club" (1999) is filed on csfd under its Czech title
+        # "Klub rváčů" - no text in common with the query - but is the first,
+        # most relevant, search hit, so a year-only match at rank 1 is trusted.
+        soup = _search_result_soup([
+            ('Klub rváčů', '1999', '/film/1-klub-rvacu/prehled/'),
+            ('Fight Club', '2023', '/film/2-remake/prehled/'),
+        ])
+        with patch.object(main, 'get_csfd_soup', return_value=soup):
+            url = main.find_csfd_film_url('Fight Club', '1999')
+        self.assertEqual(url, main.CSFD_BASE + '/film/1-klub-rvacu/prehled/')
+
+    def test_year_only_match_rejected_below_rank_limit(self):
+        # Real case: querying "The White House with Michael Irvin" (2026) - not
+        # actually on csfd - once matched an unrelated "UFC Freedom 250 (2026)"
+        # result ranked 6th out of 7, purely because its year happened to line
+        # up. A year-only match beyond CSFD_YEAR_ONLY_RANK_LIMIT must not count.
+        entries = [(f'Unrelated Show {n}', '2015', f'/film/{n}-noise/prehled/')
+                   for n in range(1, main.CSFD_YEAR_ONLY_RANK_LIMIT + 1)]
+        entries.append(('UFC Freedom 250', '2026', '/film/99-ufc/prehled/'))
+        soup = _search_result_soup(entries)
+        with patch.object(main, 'get_csfd_soup', return_value=soup):
+            url = main.find_csfd_film_url('The White House with Michael Irvin', '2026')
+        self.assertIsNone(url)
+
+    def test_exact_title_match_accepted_within_year_tolerance(self):
+        # Real case: "Un minuto de silencio" is csfd's own first, correctly-
+        # titled, hit - but csfd's year (2013) and TMDB's (2010) disagree by 3,
+        # within the tolerance for ordinary release-date drift.
+        soup = _search_result_soup([
+            ('Un minuto de silencio', '2013', '/film/1-correct/prehled/'),
+            ('Perníkový táta - Osudová minuta', '2010', '/film/2-unrelated-episode/prehled/'),
+        ])
+        with patch.object(main, 'get_csfd_soup', return_value=soup):
+            url = main.find_csfd_film_url('Un minuto de silencio', '2010')
+        self.assertEqual(url, main.CSFD_BASE + '/film/1-correct/prehled/')
+
+    def test_exact_title_match_rejected_beyond_year_tolerance(self):
+        soup = _search_result_soup([
+            ('Matrix', '1999', '/film/1-different-production/prehled/'),
+        ])
+        with patch.object(main, 'get_csfd_soup', return_value=soup):
+            url = main.find_csfd_film_url('Matrix', '1985')
+        self.assertIsNone(url)
 
     def test_no_candidates_returns_none(self):
         empty_soup = BeautifulSoup('<html><body></body></html>', 'html.parser')

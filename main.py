@@ -463,26 +463,86 @@ def get_csfd_movies():
     return csfd_movies
 
 
+# How many years apart csfd's and TMDB's release year for the *same* film are
+# still treated as a match, when the title text itself is an exact hit - covers
+# ordinary release-date drift (festival vs. wide release, regional certification
+# dates, ...) without being wide enough to accept a same-named but genuinely
+# different production (e.g. a decades-later remake) as a guess.
+CSFD_YEAR_TOLERANCE = 3
+# How many of csfd's (relevance-ranked) search results are trusted enough to
+# accept on a year match alone, with no title-text confirmation - used for a
+# title whose csfd entry is filed under a different-language name entirely (see
+# find_csfd_film_url). Results ranked below this are, going by live searches,
+# far more likely to be unrelated full-text-search noise that happens to share
+# a year than the actual queried film.
+CSFD_YEAR_ONLY_RANK_LIMIT = 3
+
+
 def find_csfd_film_url(title, year):
     """
-    Searches csfd.cz for a title and returns the URL of the best-guess matching film page,
-    or None if no result could be found. Prefers a result whose year matches the given
-    year; otherwise falls back to the first film-category result on the search page.
+    Searches csfd.cz for a title and returns the URL of the best-matching film
+    page, or None if no confidently-matching result was found.
+
+    csfd's search is a loose full-text match (it also hits descriptions, episode
+    subtitles, cast/crew names, ...), so neither a title-text match nor a year
+    match is trustworthy on its own - each produces real false positives observed
+    live:
+    - Year alone: querying a title with no csfd entry at all can still turn up
+      some unrelated result deep in the results list that happens to carry the
+      right year (e.g. "The White House with Michael Irvin" (2026) once matched
+      a "UFC Freedom 250 (2026)" listing).
+    - Title-text alone: a search result's own displayed title is frequently a
+      Czech translation with nothing in common with the (often English) query -
+      "Fight Club" surfaces "Klub rváčů" as its correct, first, hit - so an exact
+      title-text requirement would themselves reject good matches, or accept a
+      same-named-but-different production released decades apart.
+
+    So the two signals are combined, in order of confidence:
+      1. A candidate whose own displayed title AND year both match exactly.
+      2. Failing that, an exact title-text match whose year is within
+         CSFD_YEAR_TOLERANCE of the query's - covers real TMDB/csfd release-year
+         disagreement for a title distinctive enough that an exact text match is
+         confidence on its own. Exact title text is much less likely to occur by
+         chance than a shared year, so this outranks a year-only match even when
+         both are present - a same-year candidate with unrelated title text
+         doesn't get to outrank the film that's actually, textually, the one
+         being searched for.
+      3. Failing that, a year-exact match within the first
+         CSFD_YEAR_ONLY_RANK_LIMIT (most relevant) results - trusts csfd's own
+         search ranking rather than title text.
+    A candidate meeting none of these is treated as search noise rather than a
+    guess - this function returns None instead of reporting an unrelated film's
+    rating.
     """
+    if not year or not year.isdigit():
+        return None
+    query_year = int(year)
+    query_key = _match_key(title)
+
     soup = get_csfd_soup(CSFD_SEARCH_URL, {'q': title})
-    candidates = soup.select('h3.film-title-nooverflow')
-    first_href = None
-    year_match_href = None
-    for h3 in candidates:
+    year_only_top_ranked = None
+    exact_title_near_year = None
+    rank = 0
+    for h3 in soup.select('h3.film-title-nooverflow'):
         link = h3.find('a', class_='film-title-name')
         if link is None or not link.get('href'):
             continue
-        if first_href is None:
-            first_href = link['href']
-        if year and year in h3.get_text(' ', strip=True):
-            year_match_href = link['href']
-            break
-    href = year_match_href or first_href
+        rank += 1
+        href = link['href']
+        title_match = bool(query_key) and _match_key(link.get_text()) == query_key
+        year_found = re.search(r'\((\d{4})\)', h3.get_text(' ', strip=True))
+        candidate_year = int(year_found.group(1)) if year_found else None
+
+        if title_match and candidate_year == query_year:
+            return CSFD_BASE + href
+        if (year_only_top_ranked is None and candidate_year == query_year
+                and rank <= CSFD_YEAR_ONLY_RANK_LIMIT):
+            year_only_top_ranked = href
+        if (exact_title_near_year is None and title_match and candidate_year is not None
+                and abs(candidate_year - query_year) <= CSFD_YEAR_TOLERANCE):
+            exact_title_near_year = href
+
+    href = exact_title_near_year or year_only_top_ranked
     return CSFD_BASE + href if href else None
 
 
